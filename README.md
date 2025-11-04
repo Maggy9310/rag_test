@@ -49,7 +49,7 @@ pip install -r requirements.txt
 
 3. **Set up Streamlit secrets**
 
-Create a `.streamlit/secrets.toml` file with the following structure:
+Create a `.streamlit/secrets.toml` file with the following structure and **replace your API keys** accordingly:
 
 ```toml
 [langsmith]
