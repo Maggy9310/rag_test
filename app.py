@@ -12,7 +12,7 @@ from pymongo import MongoClient
 
 # LangChain imports
 from langchain.chat_models import init_chat_model
-from langchain.prompts import ChatPromptTemplate
+from langchain-classic.prompts import ChatPromptTemplate
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
