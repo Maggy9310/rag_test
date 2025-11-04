@@ -233,7 +233,7 @@ with st.sidebar:
 
 # Main header
 st.title("🤖 AI Chat Assistant")
-st.markdown("### Ask me anything about your documents!")
+st.markdown("### Ask me anything!")
 st.markdown("---")
 
 
@@ -275,7 +275,7 @@ def get_response(user_query, chat_history):
 # Initialize session state
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = [
-        AIMessage(content="Hello, I am a bot. How can I help you?"),
+        AIMessage(content="Hello, welcome to gen-Z cafe! How can I help you?"),
     ]
 
 # Display conversation history
