@@ -38,7 +38,7 @@ This application uses:
 
 1. **Clone the repository**
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/quan3010/rag_test
 cd rag_test
 ```
 
