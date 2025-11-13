@@ -35,7 +35,7 @@ def get_mongodb_collection():
     """Connect to MongoDB and return collection (cached)."""
     MONGODB_URI = os.environ['MONGO_URI']
     client = MongoClient(MONGODB_URI)
-    database = client['demo_vector_db']
+    database = client['reviews_second']
     return database['reviews']
 
 @st.cache_resource
@@ -54,7 +54,8 @@ def get_retriever():
     vector_store = MongoDBAtlasVectorSearch(
         collection=collection,
         embedding=embeddings,
-        index_name="vector_index_1",
+        text_key="review_text",
+        index_name="vector_index",
         relevance_score_fn="cosine"
     )
     return vector_store.as_retriever()
@@ -201,7 +202,7 @@ st.markdown("""
 
 # Sidebar
 with st.sidebar:
-    st.markdown("### 🤖 AI Chat Assistant in gen-Z slang 2025")
+    st.markdown("### 🤖 AI Chat Assistant")
     st.markdown("---")
     
     st.markdown("#### 📊 Session Info")
@@ -239,18 +240,10 @@ st.markdown("---")
 
 def get_response(user_query, chat_history):
     
-    template = """You are a helpful customer assistant to help with orders. 
-    Answer the following questions considering the history and
-    the context of your restaurant. User gen-z slang here and there.
-    Use emojis where appropriate.
-    If you don't know the answer, just say you don't know.
-    Do not make up answers.
-    Ask follow-up questions to have customers order more items.
-    Once done, confirm the order summary and total price.
-    Ask how they would like to pay and provide payment options.
+    template = """Answer the user question based on the context provided.
 
     Chat history: {chat_history}
-    Context of your restaurant: {context}
+    Context: {context}
     User question: {question}
     """
     
@@ -275,7 +268,7 @@ def get_response(user_query, chat_history):
 # Initialize session state
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = [
-        AIMessage(content="Hello, welcome to gen-Z cafe! How can I help you?"),
+        AIMessage(content="Hello, welcome! How can I help you?"),
     ]
 
 # Display conversation history
