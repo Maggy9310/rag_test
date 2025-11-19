@@ -8,7 +8,6 @@ from operator import itemgetter
 # Third-party imports
 import streamlit as st
 from pymongo import MongoClient
-
 # LangChain imports
 from langchain.chat_models import init_chat_model
 from langchain_core.prompts import ChatPromptTemplate
@@ -329,12 +328,56 @@ def recommend_size_with_llm(llm, retrieved_docs, height_in, height_cm, weight_lb
         "3) When recommending, always state the numeric range used and any adjustment advice.\n"
     )
 
+    # Brand-specific guidance snippets — used to enrich context when brand is known.
+    brand_guidance = {
+        ("Nike", "Jacket"): (
+            "BrandSpecificGuidance (Nike - Jacket): For taller builds (e.g., 6'1\"–6'3\") around 175–195 lb, a size L or LT is commonly recommended. "
+            "If the user is ~196 lb (89 kg), they're just above that range — consider L or LT depending on desired layering. "
+            "Note: Tech Fleece and athletic trims may run trim; if the jacket style is Tech Fleece or slim/athletic, prefer L or LT for comfort."
+        ),
+        ("Nike", "Shirt"): (
+            "BrandSpecificGuidance (Nike - Shirt): For casual shirts and tees, Nike's sizing is generally true-to-size for chest measurements. "
+            "For taller users (6'1\"+), sleeve length may be a concern — consider Long (L/T) variants if available for shirts. "
+            "If the user prefers a relaxed fit, size up one size; for athletic fits, choose the size matching chest measurement."
+        ),
+        ("Nike", "Dress"): (
+            "BrandSpecificGuidance (Nike - Dress): Nike dresses (where applicable) tend to follow bust-based sizing. "
+            "Use bust measurement first; for taller users, check length and consider trying the next size up for length and comfort. "
+            "If the dress uses athletic or stretch fabrics, the fit may be closer — prefer a larger size for non-stretch silhouettes."
+        ),
+        ("Nike", "Pants"): (
+            "BrandSpecificGuidance (Nike - Pants): Nike pants typically use waist-based sizing. If the user's waist is between sizes, prefer the larger size for comfort, especially for athletic/sport cuts. "
+            "For taller users consider inseam/length variants (e.g., L/T). If the pants are stretch fabric, true-to-waist is often OK."
+        ),
+        ("Levi's", "Jeans"): (
+            "BrandSpecificGuidance (Levi's - Jeans): Levi's sizing is generally true-to-waist. Different cuts (skinny, slim, straight) affect fit — slim/skinny will feel tighter; size up if between waist sizes. "
+            "When in doubt, prefer the waist measurement and mention cut-specific guidance."
+        ),
+        ("Uniqlo", "Pants"): (
+            "BrandSpecificGuidance (Uniqlo - Pants): Uniqlo pants are often true-to-size; for slim fits consider sizing up if hips/thighs are larger relative to waist. "
+            "Length/inseam options may be available — consider those for taller users."
+        ),
+        ("Uniqlo", "Dress"): (
+            "BrandSpecificGuidance (Uniqlo - Dress): Use bust + waist measurements; for taller users consider length and whether the silhouette is fitted or loose. Stretch fabrics fit truer to size."
+        ),
+    }
+
     if not has_numeric:
         # append selected fallback_reference to context so LLM can follow deterministic rules
         if context:
             context = context + "\n\n" + fallback_reference
         else:
             context = fallback_reference
+
+    # If we have brand-specific guidance for the requested brand/category, append it to the context
+    try:
+        bkey = (str(brand).title() if brand else "", str(category).title() if category else "")
+        guidance = brand_guidance.get(bkey) or brand_guidance.get((str(brand).title(), str(category)))
+        if guidance:
+            context = context + "\n\nBrandSpecificGuidance:\n" + guidance
+    except Exception:
+        # non-fatal if brand guidance lookup fails
+        pass
 
     template = """You are an expert apparel fitter. Use ONLY the context facts and the user's measurements to recommend a size label and explain your reasoning.
 
@@ -385,7 +428,7 @@ def get_vector_store():
 
 # Streamlit app config
 st.set_page_config(
-    page_title="AI Chat Assistant 2025",
+    page_title="SmartSize Recommendation",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -394,18 +437,21 @@ st.set_page_config(
 # Custom CSS for modern styling
 st.markdown("""
     <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap');
     :root {
-        /* Professional palette: muted navy + teal accent */
-        --ink: #0f1724; /* dark slate */
-        --bg: #f4f7fb; /* very light cool background */
-        --ai: #eef9f8; /* subtle mint */
-        --ai-ink: #0ea5a4; /* teal */
+        /* Neutral palette: slate/grayscale, low-contrast professional theme */
+        --ink: #111827; /* slate-900 */
+        --bg: #f8fafc; /* very light neutral background */
+        --ai: #ffffff; /* clean white for AI bubbles */
+        --ai-ink: #6b7280; /* muted gray for accents */
         --user: #ffffff; /* clean white for user */
-        --user-ink: #0f1724;
-        --accent: #e6f7f6; /* pale accent */
-        --accent-2: #0ea5a4; /* accent teal */
-        --muted: #64748b;
+        --user-ink: #111827;
+        --accent: #f1f5f9; /* light neutral accent */
+        --accent-2: #94a3b8; /* muted steel accent */
+        --muted: #6b7280; /* slate muted */
         --card-bg: #ffffff;
+    /* Use a single modern sans-serif (Inter) for consistent UI */
+    --font-stack: 'Inter', sans-serif;
     }
 
     /* App background */
@@ -483,6 +529,10 @@ st.markdown("""
     }
 
     /* Titles */
+    body, html, h1, h2, h3, p, div, span {
+        font-family: var(--font-stack);
+    }
+
     h1 {
         color: var(--ink);
         text-align: left;
@@ -493,7 +543,7 @@ st.markdown("""
         border: 1px solid rgba(15,23,36,0.06);
         border-radius: 10px;
         box-shadow: 0 6px 18px rgba(2,6,23,0.06);
-        font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;
+        font-family: var(--font-stack);
     }
     
     h3 {
@@ -520,7 +570,7 @@ st.markdown("""
 
 # Sidebar
 with st.sidebar:
-    st.markdown("### 🤖 AI Chat Assistant")
+    st.markdown("### SmartSize Recommendation")
     st.markdown("---")
     
     st.markdown("#### 📊 Session Info")
@@ -533,14 +583,14 @@ with st.sidebar:
     
     if st.button("🗑️ Clear Chat History", use_container_width=True):
         st.session_state.chat_history = [
-            AIMessage(content="Hello! I'm your AI assistant. How can I help you today?")
+            AIMessage(content="Hello! I'm your SmartSize assistant. How can I help you today?")
         ]
         st.rerun()
     
     st.markdown("---")
     st.markdown("#### 💡 About")
     st.markdown("""
-    This chatbot uses:
+    SmartSize uses:
     - 🔍 MongoDB Atlas Vector Search
     - 🤖 Google Gemini AI
     - 🔗 LangChain RAG
@@ -574,7 +624,40 @@ with st.sidebar:
         query_text = "Recommend a size for someone 6'2 180lbs"
         try:
             retr = vector_store.as_retriever(search_kwargs={"filter": filter_spec, "k": 5})
-            docs = retr.get_relevant_documents(query_text)
+            # Support multiple retriever APIs (compatibility across LangChain versions)
+            try:
+                retrieval_method = None
+                if hasattr(retr, "get_relevant_documents"):
+                    docs = retr.get_relevant_documents(query_text)
+                    retrieval_method = "get_relevant_documents"
+                elif hasattr(retr, "retrieve"):
+                    docs = retr.retrieve(query_text)
+                    retrieval_method = "retrieve"
+                elif callable(retr):
+                    docs = retr(query_text)
+                    retrieval_method = "callable_retriever"
+                else:
+                    raise AttributeError("Retriever has no known retrieval method")
+            except AttributeError:
+                # As a final fallback, many vector stores expose similarity_search / similarity_search_with_score
+                # on the vector store itself. Use that when the retriever object doesn't implement retrieval APIs.
+                if hasattr(vector_store, "similarity_search_with_score"):
+                    results = vector_store.similarity_search_with_score(query_text, k=5, filter=filter_spec)
+                    # results are (doc, score) tuples
+                    docs = [d for d, _ in results]
+                elif hasattr(vector_store, "similarity_search"):
+                    docs = vector_store.similarity_search(query_text, k=5, filter=filter_spec)
+                else:
+                    raise
+
+            # Show which retrieval method was used for debugging and clarity
+            try:
+                if retrieval_method:
+                    st.info(f"Retriever method used: {retrieval_method}")
+                else:
+                    st.info("Retriever method used: similarity_search (vector_store fallback)")
+            except Exception:
+                pass
             st.write("Retrieved via Atlas filtered retriever:")
             for d in docs:
                 st.write(getattr(d, 'page_content', d))
@@ -600,10 +683,37 @@ with st.sidebar:
         weight_kg = round(weight_lb / 2.20462, 1)
         try:
             retr = vector_store.as_retriever(search_kwargs={"filter": filter_spec, "k": 5})
-            docs = retr.get_relevant_documents(f"height {height_in} in ({height_cm} cm) weight {weight_lb} lb ({weight_kg} kg) bust {bust_in} in")
+            # Support multiple retriever APIs (compatibility across LangChain versions)
+            query_str = f"height {height_in} in ({height_cm} cm) weight {weight_lb} lb ({weight_kg} kg) bust {bust_in} in"
+            try:
+                retrieval_method = None
+                if hasattr(retr, "get_relevant_documents"):
+                    docs = retr.get_relevant_documents(query_str)
+                    retrieval_method = "get_relevant_documents"
+                elif hasattr(retr, "retrieve"):
+                    docs = retr.retrieve(query_str)
+                    retrieval_method = "retrieve"
+                elif callable(retr):
+                    docs = retr(query_str)
+                    retrieval_method = "callable_retriever"
+                else:
+                    raise AttributeError("Retriever has no known retrieval method")
+            except AttributeError:
+                # Fallback to vector_store similarity search methods when available
+                if hasattr(vector_store, "similarity_search_with_score"):
+                    results = vector_store.similarity_search_with_score(query_str, k=5, filter=filter_spec)
+                    docs = [d for d, _ in results]
+                elif hasattr(vector_store, "similarity_search"):
+                    docs = vector_store.similarity_search(query_str, k=5, filter=filter_spec)
+                else:
+                    raise
         except Exception as e:
             st.warning("Filtered retriever failed — falling back to local search. Error: " + str(e))
             docs = local_candidate_search(collection, embeddings, f"height {height_in} in ({height_cm} cm) weight {weight_lb} lb ({weight_kg} kg) bust {bust_in} in", filter_spec, top_k=5)
+            try:
+                st.info("Retriever method used: local_candidate_search (local cosine fallback)")
+            except Exception:
+                pass
 
         with st.spinner("Asking the LLM for a size recommendation..."):
             recommendation = recommend_size_with_llm(llm, docs, height_in, height_cm, weight_lb, weight_kg, bust_in, brand, category, gender)
@@ -611,17 +721,17 @@ with st.sidebar:
             st.write(recommendation)
 
 # Main header
-st.title("🤖 AI Chat Assistant")
+st.title("SmartSize Recommendation")
 st.markdown("### Ask me anything!")
 st.markdown("---")
 
 # Clothing-themed banner and quick category cards
 st.markdown("""
 <div style='display:flex;align-items:center;gap:18px;padding:18px;background:linear-gradient(90deg,#fff7f9,#f8fbfb);border-radius:14px;border:1px solid rgba(15,23,36,0.04)'>
-    <div style='width:64px;height:64px;border-radius:12px;background:linear-gradient(135deg,var(--accent-2),#e6f7f6);display:flex;align-items:center;justify-content:center;color:white;font-weight:800;font-size:20px'>CF</div>
+    <div style='width:64px;height:64px;border-radius:12px;background:linear-gradient(135deg,var(--accent-2),#e6f7f6);display:flex;align-items:center;justify-content:center;color:white;font-weight:800;font-size:20px'>SS</div>
     <div>
-        <div style='font-weight:700;font-size:20px;color:var(--ink)'>Clothing Fit Assistant</div>
-        <div style='color:var(--muted);font-size:13px'>Professional size recommendations — based on brand size charts and user measurements.</div>
+    <div style='font-weight:700;font-size:20px;color:var(--ink)'>SmartSize Recommendation</div>
+    <div style='color:var(--muted);font-size:13px'>Professional size recommendations — based on brand size charts and user measurements.</div>
     </div>
     <div style='margin-left:auto;display:flex;gap:12px'>
         <div style='background:var(--card-bg); padding:10px 14px; border-radius:10px; box-shadow:0 2px 6px rgba(2,6,23,0.04);border:1px solid rgba(15,23,36,0.03)'>
@@ -639,6 +749,31 @@ st.markdown("""
     </div>
 </div>
 """, unsafe_allow_html=True)
+
+# Display branding/gallery images (load from images/ folder) — arranged as a horizontal strip
+try:
+    from pathlib import Path
+    img_dir = Path(__file__).resolve().parent.parent / 'images'
+    if img_dir.exists() and any(img_dir.iterdir()):
+        # pick common image extensions and show up to 5 images
+        files = [p for p in img_dir.iterdir() if p.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp', '.svg')]
+        # filter out any screenshots or exported UI captures — keep only deliberate assets
+        files = [p for p in files if 'screenshot' not in p.name.lower() and 'screen' not in p.name.lower() and 'capture' not in p.name.lower()]
+        if files:
+            cols = st.columns(min(5, len(files)))
+            for c, f in zip(cols, files[:5]):
+                try:
+                    # display each image without captions; use width='stretch' per Streamlit deprecation guidance
+                    c.image(str(f), width='stretch')
+                except Exception:
+                    # if an image fails to render, skip it silently
+                    continue
+    else:
+        # no images found — non-fatal
+        pass
+except Exception:
+    # guard against any image/display issues
+    pass
 
 
 def get_response(user_query, chat_history):
@@ -671,13 +806,13 @@ def get_response(user_query, chat_history):
 # Initialize session state
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = [
-        AIMessage(content="Hello, welcome! How can I help you?"),
+        AIMessage(content="Hello — welcome to SmartSize Recommendation! How can I help you today?"),
     ]
 
 # Display conversation history
 for message in st.session_state.chat_history:
     if isinstance(message, AIMessage):
-        with st.chat_message("AI"):
+        with st.chat_message("SmartSize"):
             st.write(message.content)
     elif isinstance(message, HumanMessage):
         with st.chat_message("Human"):
@@ -691,7 +826,7 @@ if user_query is not None and user_query != "":
     with st.chat_message("Human"):
         st.markdown(user_query)
 
-    with st.chat_message("AI"):
+    with st.chat_message("SmartSize"):
         response = st.write_stream(get_response(user_query, st.session_state.chat_history))
 
     st.session_state.chat_history.append(AIMessage(content=response))

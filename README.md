@@ -1,4 +1,4 @@
-# 🤖 AI Chat Assistant - MongoDB Vector Search Chatbot
+# SmartSize Recommendation - MongoDB Vector Search Chatbot
 
 A modern, Gen-Z styled chatbot built with Streamlit that uses MongoDB Atlas Vector Search and Google Gemini AI to provide intelligent, context-aware responses. Perfect for customer service, order management, and conversational AI applications.
 
@@ -16,6 +16,7 @@ A modern, Gen-Z styled chatbot built with Streamlit that uses MongoDB Atlas Vect
 - 🔗 **LangChain RAG**: Retrieval-Augmented Generation for accurate, context-aware answers
 - 📈 **LangSmith Tracing**: Track and debug AI interactions
 - 💾 **Persistent Chat**: Conversation history maintained throughout session
+ - 🅰️ **Font**: Uses the modern 'Inter' sans-serif font (loaded via Google Fonts) for a clean, readable UI
 
 ## 🏗️ Architecture
 
