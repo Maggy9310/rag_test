@@ -16,17 +16,48 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_mongodb import MongoDBAtlasVectorSearch
 
-# Load environment variables
-# LangSmith / LangChain
-os.environ["LANGCHAIN_TRACING_V2"] = st.secrets["langsmith"]["tracing"]
-os.environ["LANGCHAIN_ENDPOINT"] = st.secrets["langsmith"]["endpoint"]
-os.environ["LANGCHAIN_API_KEY"] = st.secrets["langsmith"]["api_key"]
+import logging
 
-# Google
-os.environ["GOOGLE_API_KEY"] = st.secrets["google"]["api_key"]
+# Load environment variables safely from Streamlit secrets if present and
+# otherwise fall back to existing environment variables. This prevents
+# KeyError crashes in environments without all secrets set (useful for CI
+# and local development without credentials).
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
-# Mongo
-os.environ["MONGO_URI"] = st.secrets["mongodb"]["uri"]
+def load_secrets_into_env():
+    # LangSmith / LangChain (optional)
+    try:
+        ls = st.secrets.get("langsmith", {}) if hasattr(st, "secrets") else {}
+        if ls:
+            if ls.get("tracing"):
+                os.environ.setdefault("LANGCHAIN_TRACING_V2", ls.get("tracing"))
+            if ls.get("endpoint"):
+                os.environ.setdefault("LANGCHAIN_ENDPOINT", ls.get("endpoint"))
+            if ls.get("api_key"):
+                os.environ.setdefault("LANGCHAIN_API_KEY", ls.get("api_key"))
+    except Exception as e:
+        logger.debug("Could not load langsmith secrets: %s", e)
+
+    # Google (optional but required for live embeddings/LLM)
+    try:
+        g = st.secrets.get("google", {}) if hasattr(st, "secrets") else {}
+        if g and g.get("api_key"):
+            os.environ.setdefault("GOOGLE_API_KEY", g.get("api_key"))
+    except Exception as e:
+        logger.debug("Could not load google secrets: %s", e)
+
+    # Mongo (required to connect to DB)
+    try:
+        m = st.secrets.get("mongodb", {}) if hasattr(st, "secrets") else {}
+        if m and m.get("uri"):
+            os.environ.setdefault("MONGO_URI", m.get("uri"))
+    except Exception as e:
+        logger.debug("Could not load mongodb secrets: %s", e)
+
+
+# Call at import time so subsequent functions can rely on os.environ
+load_secrets_into_env()
 
 @st.cache_resource
 def get_mongodb_collection():
@@ -58,10 +89,9 @@ def get_retriever():
     )
     return vector_store.as_retriever()
 
-# Initialize cached resources
-collection = get_mongodb_collection()
-embeddings, llm = get_embeddings_and_llm()
-retriever = get_retriever()
+# Note: do not initialize DB/LLM resources at import time. We call the
+# cached factory functions from code paths (or tests) so imports don't
+# fail when secrets are not available (important for CI/tests).
 
 # Helper function
 def format_docs(docs):
@@ -198,6 +228,74 @@ def local_candidate_search(collection, embeddings, query_text, filter_spec, top_
     return [d for s, d in scored[:top_k]]
 
 
+def _fmt_chart(name, ranges, height_hint=None, note=None):
+    parts = [f"{name}:"]
+    parts.append("; ".join(f"{k}: {v}" for k, v in ranges.items()))
+    if height_hint:
+        parts.append(f"Height guidance: {height_hint}")
+    if note:
+        parts.append(f"Note: {note}")
+    return "\n".join(parts)
+
+
+def get_fallback_charts():
+    charts = {}
+    charts[("Dress", "Female")] = _fmt_chart(
+        "Dress (Female)",
+        {"S": "32-34", "M": "34-36", "L": "36-38", "XL": "38-40"},
+        height_hint="Short/tall adjustments: if user >170 cm consider length and silhouette; when between sizes choose larger for comfort",
+        note="Use bust first, then height for length adjustments"
+    )
+    charts[("Shirt", "Female")] = _fmt_chart(
+        "Shirt (Female)",
+        {"XS": "30-32", "S": "32-34", "M": "34-36", "L": "36-38"},
+        height_hint="If user is taller, consider size up for sleeve length",
+        note="Prefer bust measurement when available"
+    )
+    charts[("Shirt", "Male")] = _fmt_chart(
+        "Shirt (Male)",
+        {"S": "36-38", "M": "38-40", "L": "42-44", "XL": "46-48"},
+        height_hint="If between chest ranges and user is tall, consider larger size",
+        note="Athletic vs relaxed fit may change choice"
+    )
+    charts[("Jacket", "Male")] = _fmt_chart(
+        "Jacket (Male)",
+        {"S": "35-37", "M": "38-40", "L": "41-43", "XL": "44-46"},
+        height_hint="Jackets often sized for chest; if user is >6ft consider length adjustments",
+        note="Recommend layering allowance if user wants room"
+    )
+    charts[("Pants", "Female")] = _fmt_chart(
+        "Pants (Female)",
+        {"XS": "23-24 (waist)", "S": "25-26", "M": "27-28", "L": "29-30", "XL": "31-32"},
+        height_hint="Use hip measurement for fit; if between sizes prefer larger for comfort",
+        note="Check inseam/length for tall/short users"
+    )
+    charts[("Jeans", "Male")] = _fmt_chart(
+        "Jeans (Male)",
+        {"30": "Waist 30 in", "32": "Waist 32 in", "34": "Waist 34 in", "36": "Waist 36 in"},
+        note="Levi's style/cut affects fit; size up for slim fits"
+    )
+    charts[("default", "default")] = _fmt_chart(
+        "Default (All)",
+        {"S": "34-36", "M": "38-40", "L": "42-44", "XL": "46-48"},
+        height_hint="Use height+weight to estimate body type if bust missing",
+        note="If unsure, prefer larger size for comfort"
+    )
+    return charts
+
+
+def get_fallback_chart(category, gender):
+    charts = get_fallback_charts()
+    cat_key = (str(category).title() if category else "").strip()
+    gen_key = (str(gender).title() if gender else "").strip()
+    if (cat_key, gen_key) in charts:
+        return charts[(cat_key, gen_key)]
+    elif (cat_key, "") in charts:
+        return charts[(cat_key, "")]
+    else:
+        return charts[("default", "default")]
+
+
 def recommend_size_with_llm(llm, retrieved_docs, height_in, height_cm, weight_lb, weight_kg, bust_in, brand, category, gender):
     """Call the LLM with context and measurements to produce a size recommendation."""
     # Build context text robustly from different doc shapes (Document-like or dict)
@@ -261,8 +359,7 @@ def recommend_size_with_llm(llm, retrieved_docs, height_in, height_cm, weight_lb
     # Append qualitative observation directive to context so the LLM accounts for it
     context = (context + "\n\nObservations:\n" + observation_text + "\nDirective:\n" + bias_directive) if context else ("Observations:\n" + observation_text + "\nDirective:\n" + bias_directive)
 
-    # Define multiple fallback charts keyed by (Category, Gender). These are conservative default ranges (inches).
-    # The LLM will be given the selected chart for the requested category/gender when no numeric facts exist in context.
+    # Use a callable that builds fallback charts so it can be reused and unit-tested.
     def _fmt_chart(name, ranges, height_hint=None, note=None):
         parts = [f"{name}:"]
         parts.append("; ".join(f"{k}: {v}" for k, v in ranges.items()))
@@ -272,53 +369,63 @@ def recommend_size_with_llm(llm, retrieved_docs, height_in, height_cm, weight_lb
             parts.append(f"Note: {note}")
         return "\n".join(parts)
 
-    fallback_charts = {}
-    # Dresses (female) — chest/bust ranges; dresses often size by bust/waist
-    fallback_charts[("Dress", "Female")] = _fmt_chart(
-        "Dress (Female)",
-        {"S": "32-34", "M": "34-36", "L": "36-38", "XL": "38-40"},
-        height_hint="Short/tall adjustments: if user >170 cm consider length and silhouette; when between sizes choose larger for comfort",
-        note="Use bust first, then height for length adjustments"
-    )
-    # Shirts / Tops (female)
-    fallback_charts[("Shirt", "Female")] = _fmt_chart(
-        "Shirt (Female)",
-        {"XS": "30-32", "S": "32-34", "M": "34-36", "L": "36-38"},
-        height_hint="If user is taller, consider size up for sleeve length",
-        note="Prefer bust measurement when available"
-    )
-    # Shirts / Tops (male)
-    fallback_charts[("Shirt", "Male")] = _fmt_chart(
-        "Shirt (Male)",
-        {"S": "36-38", "M": "38-40", "L": "42-44", "XL": "46-48"},
-        height_hint="If between chest ranges and user is tall, consider larger size",
-        note="Athletic vs relaxed fit may change choice"
-    )
-    # Jackets (male)
-    fallback_charts[("Jacket", "Male")] = _fmt_chart(
-        "Jacket (Male)",
-        {"S": "35-37", "M": "38-40", "L": "41-43", "XL": "44-46"},
-        height_hint="Jackets often sized for chest; if user is >6ft consider length adjustments",
-        note="Recommend layering allowance if user wants room"
-    )
-    # Generic default (conservative)
-    fallback_charts[("default", "default")] = _fmt_chart(
-        "Default (All)",
-        {"S": "34-36", "M": "38-40", "L": "42-44", "XL": "46-48"},
-        height_hint="Use height+weight to estimate body type if bust missing",
-        note="If unsure, prefer larger size for comfort"
-    )
+    def get_fallback_charts():
+        charts = {}
+        charts[("Dress", "Female")] = _fmt_chart(
+            "Dress (Female)",
+            {"S": "32-34", "M": "34-36", "L": "36-38", "XL": "38-40"},
+            height_hint="Short/tall adjustments: if user >170 cm consider length and silhouette; when between sizes choose larger for comfort",
+            note="Use bust first, then height for length adjustments"
+        )
+        charts[("Shirt", "Female")] = _fmt_chart(
+            "Shirt (Female)",
+            {"XS": "30-32", "S": "32-34", "M": "34-36", "L": "36-38"},
+            height_hint="If user is taller, consider size up for sleeve length",
+            note="Prefer bust measurement when available"
+        )
+        charts[("Shirt", "Male")] = _fmt_chart(
+            "Shirt (Male)",
+            {"S": "36-38", "M": "38-40", "L": "42-44", "XL": "46-48"},
+            height_hint="If between chest ranges and user is tall, consider larger size",
+            note="Athletic vs relaxed fit may change choice"
+        )
+        charts[("Jacket", "Male")] = _fmt_chart(
+            "Jacket (Male)",
+            {"S": "35-37", "M": "38-40", "L": "41-43", "XL": "44-46"},
+            height_hint="Jackets often sized for chest; if user is >6ft consider length adjustments",
+            note="Recommend layering allowance if user wants room"
+        )
+        charts[("Pants", "Female")] = _fmt_chart(
+            "Pants (Female)",
+            {"XS": "23-24 (waist)", "S": "25-26", "M": "27-28", "L": "29-30", "XL": "31-32"},
+            height_hint="Use hip measurement for fit; if between sizes prefer larger for comfort",
+            note="Check inseam/length for tall/short users"
+        )
+        charts[("Jeans", "Male")] = _fmt_chart(
+            "Jeans (Male)",
+            {"30": "Waist 30 in", "32": "Waist 32 in", "34": "Waist 34 in", "36": "Waist 36 in"},
+            note="Levi's style/cut affects fit; size up for slim fits"
+        )
+        charts[("default", "default")] = _fmt_chart(
+            "Default (All)",
+            {"S": "34-36", "M": "38-40", "L": "42-44", "XL": "46-48"},
+            height_hint="Use height+weight to estimate body type if bust missing",
+            note="If unsure, prefer larger size for comfort"
+        )
+        return charts
 
-    # Normalize keys and pick the best matching fallback chart
-    cat_key = (str(category).title() if category else "").strip()
-    gen_key = (str(gender).title() if gender else "").strip()
-    selected = None
-    if (cat_key, gen_key) in fallback_charts:
-        selected = fallback_charts[(cat_key, gen_key)]
-    elif (cat_key, "") in fallback_charts:
-        selected = fallback_charts[(cat_key, "")]
-    else:
-        selected = fallback_charts[("default", "default")]
+    def get_fallback_chart(category, gender):
+        charts = get_fallback_charts()
+        cat_key = (str(category).title() if category else "").strip()
+        gen_key = (str(gender).title() if gender else "").strip()
+        if (cat_key, gen_key) in charts:
+            return charts[(cat_key, gen_key)]
+        elif (cat_key, "") in charts:
+            return charts[(cat_key, "")]
+        else:
+            return charts[("default", "default")]
+
+    selected = get_fallback_chart(category, gender)
 
     fallback_reference = (
         "SelectedFallbackChart:\n" + selected + "\n\n"
@@ -609,24 +716,41 @@ with st.sidebar:
     gender = st.selectbox("Gender", options=["Male", "Female", "Unisex"])
 
     if st.button("Upsert sample size docs"):
-        msg = upsert_size_docs(collection)
+        try:
+            collection = get_mongodb_collection()
+        except Exception as e:
+            st.error(f"Cannot connect to MongoDB: {e}")
+            collection = None
+        if collection:
+            msg = upsert_size_docs(collection)
+            st.success(msg)
         st.success(msg)
 
     if st.button("Embed missing size docs"):
         with st.spinner("Embedding missing docs — this uses your embeddings quota..."):
-            msg = embed_missing_docs(collection, embeddings)
-            st.success(msg)
+            try:
+                collection = get_mongodb_collection()
+                embeddings, _ = get_embeddings_and_llm()
+            except Exception as e:
+                st.error(f"Cannot run embedding: {e}")
+                collection = None
+                embeddings = None
+            if collection and embeddings:
+                msg = embed_missing_docs(collection, embeddings)
+                st.success(msg)
 
     if st.button("Run size retrieval"):
         # Attempt filtered retriever first, fallback to local cosine on stored embeddings
         filter_spec = {"brand": brand, "category": category, "doc_type": "size_chart", "gender": gender}
         vector_store = get_vector_store()
         query_text = "Recommend a size for someone 6'2 180lbs"
+        retrieval_method = None
+        docs = []
+        docs_with_scores = None
         try:
             retr = vector_store.as_retriever(search_kwargs={"filter": filter_spec, "k": 5})
             # Support multiple retriever APIs (compatibility across LangChain versions)
             try:
-                retrieval_method = None
                 if hasattr(retr, "get_relevant_documents"):
                     docs = retr.get_relevant_documents(query_text)
                     retrieval_method = "get_relevant_documents"
@@ -640,33 +764,47 @@ with st.sidebar:
                     raise AttributeError("Retriever has no known retrieval method")
             except AttributeError:
                 # As a final fallback, many vector stores expose similarity_search / similarity_search_with_score
-                # on the vector store itself. Use that when the retriever object doesn't implement retrieval APIs.
                 if hasattr(vector_store, "similarity_search_with_score"):
                     results = vector_store.similarity_search_with_score(query_text, k=5, filter=filter_spec)
-                    # results are (doc, score) tuples
+                    docs_with_scores = results
                     docs = [d for d, _ in results]
+                    retrieval_method = "similarity_search_with_score"
                 elif hasattr(vector_store, "similarity_search"):
                     docs = vector_store.similarity_search(query_text, k=5, filter=filter_spec)
+                    retrieval_method = "similarity_search"
                 else:
                     raise
-
-            # Show which retrieval method was used for debugging and clarity
-            try:
-                if retrieval_method:
-                    st.info(f"Retriever method used: {retrieval_method}")
-                else:
-                    st.info("Retriever method used: similarity_search (vector_store fallback)")
-            except Exception:
-                pass
-            st.write("Retrieved via Atlas filtered retriever:")
-            for d in docs:
-                st.write(getattr(d, 'page_content', d))
         except Exception as e:
             st.warning("Filtered retriever failed — falling back to local search. Error: " + str(e))
-            candidates = local_candidate_search(collection, embeddings, query_text, filter_spec, top_k=5)
-            st.write("Retrieved via local cosine search:")
-            for c in candidates:
-                st.write(c.get("review_text") or c)
+            try:
+                collection = get_mongodb_collection()
+                embeddings, _ = get_embeddings_and_llm()
+            except Exception:
+                collection = None
+                embeddings = None
+            if collection and embeddings:
+                local_candidates = local_candidate_search(collection, embeddings, query_text, filter_spec, top_k=5)
+                docs = local_candidates
+                retrieval_method = "local_candidate_search"
+
+        # Show retrieved context and trace log in expanders for clarity
+        with st.expander("Retrieved Context", expanded=True):
+            if docs_with_scores:
+                for d, score in docs_with_scores:
+                    st.write(getattr(d, 'page_content', d))
+                    st.caption(f"Similarity: {score:.4f}")
+            elif docs:
+                for d in docs:
+                    # d may be a dict or Document-like
+                    if isinstance(d, dict):
+                        st.write(d.get('review_text') or d)
+                    else:
+                        st.write(getattr(d, 'page_content', d))
+            else:
+                st.write("No documents retrieved.")
+
+        with st.expander("Trace Log", expanded=False):
+            st.write({"retrieval_method": retrieval_method, "filter": filter_spec})
 
     # Measurements inputs for LLM recommendation
     st.markdown("---")
@@ -681,12 +819,17 @@ with st.sidebar:
         # derive metric conversions for the LLM
         height_cm = round(height_in * 2.54, 1)
         weight_kg = round(weight_lb / 2.20462, 1)
+        retrieval_method = None
+        docs = []
+        docs_with_scores = None
         try:
+            # Ensure resources are available
+            collection = get_mongodb_collection()
+            embeddings, llm = get_embeddings_and_llm()
             retr = vector_store.as_retriever(search_kwargs={"filter": filter_spec, "k": 5})
             # Support multiple retriever APIs (compatibility across LangChain versions)
             query_str = f"height {height_in} in ({height_cm} cm) weight {weight_lb} lb ({weight_kg} kg) bust {bust_in} in"
             try:
-                retrieval_method = None
                 if hasattr(retr, "get_relevant_documents"):
                     docs = retr.get_relevant_documents(query_str)
                     retrieval_method = "get_relevant_documents"
@@ -702,23 +845,56 @@ with st.sidebar:
                 # Fallback to vector_store similarity search methods when available
                 if hasattr(vector_store, "similarity_search_with_score"):
                     results = vector_store.similarity_search_with_score(query_str, k=5, filter=filter_spec)
+                    docs_with_scores = results
                     docs = [d for d, _ in results]
+                    retrieval_method = "similarity_search_with_score"
                 elif hasattr(vector_store, "similarity_search"):
                     docs = vector_store.similarity_search(query_str, k=5, filter=filter_spec)
+                    retrieval_method = "similarity_search"
                 else:
                     raise
         except Exception as e:
             st.warning("Filtered retriever failed — falling back to local search. Error: " + str(e))
-            docs = local_candidate_search(collection, embeddings, f"height {height_in} in ({height_cm} cm) weight {weight_lb} lb ({weight_kg} kg) bust {bust_in} in", filter_spec, top_k=5)
             try:
-                st.info("Retriever method used: local_candidate_search (local cosine fallback)")
+                collection = get_mongodb_collection()
+                embeddings, _ = get_embeddings_and_llm()
             except Exception:
-                pass
+                collection = None
+                embeddings = None
+            if collection and embeddings:
+                docs = local_candidate_search(collection, embeddings, f"height {height_in} in ({height_cm} cm) weight {weight_lb} lb ({weight_kg} kg) bust {bust_in} in", filter_spec, top_k=5)
+                retrieval_method = "local_candidate_search"
 
         with st.spinner("Asking the LLM for a size recommendation..."):
+            # If llm isn't available (credentials missing) the recommend function still has a deterministic fallback
+            try:
+                if 'llm' not in locals():
+                    _, llm = get_embeddings_and_llm()
+            except Exception:
+                llm = None
+
             recommendation = recommend_size_with_llm(llm, docs, height_in, height_cm, weight_lb, weight_kg, bust_in, brand, category, gender)
-            st.markdown("**LLM Recommendation:**")
-            st.write(recommendation)
+
+            with st.expander("Final Answer", expanded=True):
+                st.markdown("**LLM Recommendation:**")
+                st.write(recommendation)
+
+            with st.expander("Retrieved Context", expanded=False):
+                if docs_with_scores:
+                    for d, score in docs_with_scores:
+                        st.write(getattr(d, 'page_content', d))
+                        st.caption(f"Similarity: {score:.4f}")
+                elif docs:
+                    for d in docs:
+                        if isinstance(d, dict):
+                            st.write(d.get('review_text') or d)
+                        else:
+                            st.write(getattr(d, 'page_content', d))
+                else:
+                    st.write("No contextual documents available.")
+
+            with st.expander("Trace Log", expanded=False):
+                st.write({"retrieval_method": retrieval_method, "filter": filter_spec})
 
 # Main header
 st.title("SmartSize Recommendation")
@@ -786,7 +962,21 @@ def get_response(user_query, chat_history):
     """
     
     prompt = ChatPromptTemplate.from_template(template)
-    
+
+    # Resolve retriever/llm lazily so get_response can be imported/run in test
+    try:
+        retriever = get_retriever()
+    except Exception:
+        retriever = None
+    try:
+        _, llm = get_embeddings_and_llm()
+    except Exception:
+        llm = None
+
+    if retriever is None or llm is None:
+        # Fallback: return a simple canned response when models are unavailable
+        return "I can't access the LLM or retriever right now. Please check your credentials or try again later."
+
     chain = (
         {
             "context": itemgetter("question") | retriever | format_docs,
@@ -797,7 +987,7 @@ def get_response(user_query, chat_history):
         | llm
         | StrOutputParser()
     )
-    
+
     return chain.stream({
         "chat_history": chat_history,
         "question": user_query,
